@@ -1,0 +1,314 @@
+<?php
+
+/**
+ * @file
+ *   Adds Mozilla BrowserID support to Drupal.
+ */
+/**
+ * Status codes for BrowserID verification.
+ */
+define('BROWSERID_REGISTER', 1);
+define('BROWSERID_LOGIN', 2);
+define('BROWSERID_ACCESS_DENIED', 3);
+
+/**
+ * Implements hook_menu().
+ */
+function browserid_menu() {
+    $items = array();
+    $items['admin/people/browserid'] = array(
+        'title' => 'BrowserID',
+        'page callback' => 'drupal_get_form',
+        'page arguments' => array('browserid_admin_form'),
+        'access arguments' => array('administer site configuration'),
+        'description' => 'Allows administrators to configure settings for the BrowserID module.',
+    );
+    $items['browserid/verify'] = array(
+        'title' => 'BrowserID',
+        'page callback' => 'browserid_verify',
+        'access arguments' => array('log in using browserid'),
+        'description' => 'Verifies BrowserID assertions.',
+        'type' => MENU_CALLBACK,
+    );
+    return $items;
+}
+
+
+/**
+ * Implements hook_init().
+ */
+function browserid_init() {
+      // Provide e-mail address for display in BrowserID browser chrome.
+    if (user_is_logged_in()) {
+        drupal_add_js(array('browserid' => array(
+                'email' => $GLOBALS['user']->mail
+                )), 'setting');
+    } else {
+        $token = _bv_browserid_idp_getCacheCSRF()->getHash(); 
+        
+        drupal_add_js(array('browserid' => array(
+                'token' => $token,
+                )), 'setting');
+    }
+    
+    drupal_add_js(drupal_get_path('module', 'browserid') . '/browserid.js');
+    
+}
+
+/**
+ * Implements hook_permission().
+ */
+function browserid_perm() {
+    return array('log in using browserid');
+}
+
+
+/**
+ * Display the BrowserID login button.
+ *
+ * @param $type
+ *   The type of sign-in button to display. If not specified, the site's
+ *   setting is used.
+ * @param $all
+ *   If TRUE, returns an array of all button types. Otherwise, returns the
+ *   specified button type.
+ * @return
+ *   HTML for the sign-in button.
+ */
+function browserid_login_button($type = NULL, $all = FALSE) {
+    $path = drupal_get_path('module', 'browserid');
+    
+    
+    
+    
+    drupal_set_html_head(
+        '<script type="text/javascript" src="' . 
+        variable_get('bvp_browserid_js', 'https://dev.diresworb.org/') . 
+        'include.js'.'"></script>'
+    );
+     
+    
+    if (empty($type)) {
+        $type = variable_get('browserid_button', 'blue');
+    }
+    $vars = array(
+        'width' => 79, 
+        'height' => 22, 
+        'alt' => t('Sign in with BrowserID'), 
+        'attributes' => array('class' => 'browserid-button', 
+        'style' => 'cursor: pointer; display: none;')
+    );
+    
+    $options = array(
+        //'text' => l(t('Sign in with BrowserID'), $_REQUEST['q']),
+        //'button' => t('Standard button'),
+        'red' => _browserid_themeimage(
+            $vars + array('path' => $path . '/images/sign_in_red.png')),
+        'blue' => _browserid_themeimage(
+            $vars + array('path' => $path . '/images/sign_in_blue.png')),
+        'orange' => _browserid_themeimage(
+            $vars + array('path' => $path . '/images/sign_in_orange.png')),
+        'green' => _browserid_themeimage( 
+            $vars + array('path' => $path . '/images/sign_in_green.png')),
+        'grey' => _browserid_themeimage(
+            $vars + array('path' => $path . '/images/sign_in_grey.png')),
+    );
+    
+   return $all ? $options : $options[$type];
+}
+
+function _browserid_themeimage($vars) {
+    return theme('image', $vars['path'], $vars['alt'], $vars['alt'], $vars['attributes']);
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function browserid_form_user_login_alter(&$form, $form_state) {
+    
+    if (variable_get('browserid_login_form', 1) && 
+            user_access('log in using browserid')) {
+        
+        $form['browserid'] = array(
+            '#type' => 'markup',
+            '#value' => browserid_login_button(),
+        );
+        
+    }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function browserid_form_user_register_form_alter(&$form, $form_state) {    
+    $result = browserid_verify_request();
+    if ($result['code'] == BROWSERID_ACCESS_DENIED) {
+        return;
+    } elseif ($result['code'] == BROWSERID_LOGIN) {
+        drupal_goto('user/' . $result['account']->uid);
+    } elseif ($result['code'] == BROWSERID_REGISTER) {
+        $error = user_validate_mail($result['email']);
+        if (!$error) {
+            drupal_set_message(
+                    t('The email address %mail is not registered on @site.', array(
+                        '%mail' => $result['email'],
+                        '@site' => variable_get('site_name', 'Drupal'),
+                    )) . ' ' .
+                    t('You can register below, or try again with a different email address: !browserid', array(
+                        '!browserid' => browserid_login_button(),
+                    ))
+            );
+            $form['account']['mail'] = array(
+                '#type' => 'value',
+                '#value' => $result['email'],
+            );
+            $form['account']['mail_info'] = array(
+                '#type' => 'item',
+                '#title' => t('E-mail address'),
+                '#markup' => '<p>' . check_plain($result['email']) . '</p>',
+                '#required' => TRUE,
+                '#weight' => -1,
+            );
+        }
+    }
+}
+
+/**
+ * The administrative settings form.
+ */
+function browserid_admin_form($form, $form_state) {
+    $form['browserid_button'] = array(
+        '#type' => 'radios',
+        '#title' => t('Button'),
+        '#default_value' => variable_get('browserid_button', 'blue'),
+        '#options' => browserid_login_button(NULL, TRUE),
+    );
+    $form['browserid_login_form'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Add a "Log in with BrowserID" button to the normal user login form'),
+        '#default_value' => variable_get('browserid_login_form', 1),
+    );
+    return system_settings_form($form);
+}
+
+/**
+ * Verifies assertions.
+ */
+function browserid_verify() {
+    
+    $result = browserid_verify_request();
+   
+    if ($result['code'] == BROWSERID_ACCESS_DENIED) {
+        return MENU_ACCESS_DENIED;
+    } elseif ($result['code'] == BROWSERID_LOGIN) {
+        drupal_json_output((object) array('reload' => TRUE));
+    } elseif ($result['code'] == BROWSERID_REGISTER) {
+        drupal_json_output((object) array(
+                    'destination' => url('user/register', array('query' => array(
+                            'assertion' => $result['assertion'],
+                            'audience' => $result['audience'],
+                            'token' => $result['token'],
+                            ))),
+        ));
+    }
+    exit;
+}
+
+/**
+ * Return current site url
+ * User could override it inside $conf['browserid_audience'] on settings.php
+ * for best security
+ * 
+ * @return string
+ */
+function _browserid_get_audience() {
+    $audience = variable_get('browserid_audience', null);
+    if (!empty($audience)) {
+        return $audience;
+    }
+
+    $proto = 'http';
+
+    if (!empty($_SERVER['HTTPS']) ||
+            ((isset($_SERVER['HTTP_X_FORWARDED_PROTO'])) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https')) {
+        $proto = 'https';
+    }
+
+    $audience = $proto . '://' . $_SERVER['SERVER_NAME'];
+
+    $std_ports = array('80', '443');
+    if (!in_array($_SERVER['SERVER_PORT'], $std_ports)) {
+        $audience .= ':' . $_SERVER['SERVER_PORT'];
+    }
+
+    return $audience;
+}
+
+/**
+ * Verifies assertion and token.
+ */
+function browserid_verify_request() {
+    global $base_root;    
+    $xsrf = _bv_browserid_idp_getCacheCSRF();
+    
+    if ($GLOBALS['user']->uid ||
+            !isset($_POST['assertion']) ||
+            !isset($_POST['token']) ||
+            !$xsrf->validateHash($_POST['token'], true)            
+    ) {
+        return array('code' => BROWSERID_ACCESS_DENIED);
+    }
+    // The audience (hostname+port) should also be in $_SERVER['HTTP_HOST'] but that is not safe.  
+    $audience = _browserid_get_audience();
+    $verifier = variable_get('browserid_verifier', 'https://browserid.org/verify');
+    
+    watchdog(
+        'browserid',
+        'Performing request on : {%verifier}',
+        array('%verifier' => $verifier),
+        WATCHDOG_NOTICE
+    );
+
+    $response = drupal_http_request(
+        variable_get('browserid_verifier', 'http://opentel-dev:10002/verify'), 
+        array('Content-Type' => 'application/x-www-form-urlencoded'),
+        'POST',
+        'assertion=' . urlencode($_POST['assertion']) . '&audience=' . urlencode($audience)        
+    );
+   
+    
+    if ($response->code == 200) {
+        $data = json_decode($response->data);
+        if ($data !== NULL && $data->status === 'okay') {
+            $account = user_load_by_mail($data->email);
+            if (!empty($account) && !empty($account->uid)) {
+                $form_state = array('uid' => $account->uid);
+                user_login_submit(array(), $form_state);
+                return array(
+                    'code' => BROWSERID_LOGIN,
+                    'account' => $account,
+                    'assertion' => $_REQUEST['assertion'],
+                    'audience' => $audience,
+                    // no need to regenerate it, we've already checked it's safe
+                    'token' => $_REQUEST['token'], 
+                );
+            } else {
+                return array(
+                    'code' => BROWSERID_REGISTER,
+                    'email' => $data->email,
+                    'assertion' => $_REQUEST['assertion'],
+                    'audience' => $audience,
+                    // no need to regenerate it, we've already checked it's safe
+                    'token' => $_REQUEST['token'], 
+                );
+            }
+        }
+    }
+    watchdog(
+        'browserid', 
+        'There was an error on request to verifier: {%response}', 
+        array('%response' => print_r($response, 1)), 
+        WATCHDOG_ERROR
+    );
+}
+

@@ -1,0 +1,7 @@
+; $Id
+name = Bluevia BrowserID RP
+description = Features Mozilla BrowserID RP
+package = Bluevia - Integration
+core = 6.x
+
+dependencies[] = bv_browserid_idp
