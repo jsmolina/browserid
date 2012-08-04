@@ -1,4 +1,4 @@
-Welcome to BrowserId.
+Welcome to BrowserId Relying Party for Drupal 6.
 
 Installing:
 This module provides a 'Login' button inside login form and a configurable block.
